@@ -8,26 +8,47 @@ Materia: Compiladores - UNADECA - Prof. William Martinez
 Fases:
   1. Análisis léxico      -> lista de tokens
   2. Análisis sintáctico  -> AST (árbol) + AST Table
-  3. Análisis semántico   -> Tabla de Símbolos + verificación de tipos
+  3. Análisis semántico   -> Tabla de Símbolos (con ámbitos) + verificación de tipos
   4. Ejecución            -> se interpreta el AST y se muestran los valores finales
+
+El lenguaje tiene variables, expresiones y funciones:
+  - funciones predefinidas: mostrar, longitud, mayusculas, redondear, absoluto
+  - funciones propias:      funcion nombre(p: tipo, ...): tipo { ... retornar valor; }
 
 Uso:
     python alex.py programa.alex
     python alex.py programa.alex --tokens     (muestra también la tabla de tokens)
 """
 import sys
+import math
 import argparse
 
 # ---------------------------------------------------------------------------
 # Definición del lenguaje
 # ---------------------------------------------------------------------------
 TIPOS = {"entero", "decimal", "texto", "logico"}
-RESERVADAS = {"dato", "entero", "decimal", "texto", "logico", "verdadero", "falso"}
+RESERVADAS = {"dato", "funcion", "retornar",
+              "entero", "decimal", "texto", "logico", "verdadero", "falso"}
+TOK_RESERVADOS = ("DATO", "FUNCION", "RETORNAR", "TIPO", "VERDADERO", "FALSO")
 DIGITOS = "0123456789"
 SIMPLES = {
     ":": "DOSPUNTOS", ";": "PUNTOCOMA", "=": "IGUAL",
     "+": "MAS", "-": "MENOS", "*": "POR", "/": "DIV",
-    "(": "LPAR", ")": "RPAR",
+    "(": "LPAR", ")": "RPAR", "{": "LLAVEIZQ", "}": "LLAVEDER", ",": "COMA",
+}
+
+# Funciones predefinidas de ALEX.
+#   params: lista de (nombre, tipo)   tipo None = cualquier valor
+#                                     tipo "numerico" = entero o decimal
+#   ret:    tipo que devuelve         None = no devuelve valor
+#                                     "=arg" = el mismo tipo que su argumento
+#   variadica: acepta más argumentos del último tipo
+PREDEFINIDAS = {
+    "mostrar":    {"params": [("valor", None)],        "ret": None, "variadica": True},
+    "longitud":   {"params": [("texto", "texto")],     "ret": "entero"},
+    "mayusculas": {"params": [("texto", "texto")],     "ret": "texto"},
+    "redondear":  {"params": [("numero", "decimal")],  "ret": "entero"},
+    "absoluto":   {"params": [("numero", "numerico")], "ret": "=arg"},
 }
 
 
@@ -86,6 +107,10 @@ def analizar_lexico(fuente):
             lex = fuente[i:j]
             if lex == "dato":
                 t = "DATO"
+            elif lex == "funcion":
+                t = "FUNCION"
+            elif lex == "retornar":
+                t = "RETORNAR"
             elif lex in TIPOS:
                 t = "TIPO"
             elif lex == "verdadero":
@@ -140,13 +165,18 @@ def analizar_lexico(fuente):
 #
 # Gramática de ALEX:
 #   programa    ::= { sentencia } EOF
-#   sentencia   ::= declaracion | asignacion
+#   sentencia   ::= declaracion | asignacion | funcion | retorno | llamada ";"
 #   declaracion ::= "dato" IDENT ":" TIPO [ "=" expresion ] ";"
 #   asignacion  ::= IDENT "=" expresion ";"
+#   funcion     ::= "funcion" IDENT "(" [ parametros ] ")" [ ":" TIPO ]
+#                   "{" { sentencia } "}"            (solo al nivel principal)
+#   parametros  ::= IDENT ":" TIPO { "," IDENT ":" TIPO }
+#   retorno     ::= "retornar" [ expresion ] ";"
+#   llamada     ::= IDENT "(" [ expresion { "," expresion } ] ")"
 #   expresion   ::= termino { ("+" | "-") termino }
 #   termino     ::= factor  { ("*" | "/") factor }
 #   factor      ::= "-" factor | ENTERO | DECIMAL | TEXTO
-#                 | "verdadero" | "falso" | IDENT | "(" expresion ")"
+#                 | "verdadero" | "falso" | llamada | IDENT | "(" expresion ")"
 # ---------------------------------------------------------------------------
 class Nodo:
     def __init__(self, tipo, valor=None, hijos=None, linea=0):
@@ -155,8 +185,11 @@ class Nodo:
         self.hijos = hijos if hijos is not None else []
         self.linea = linea
         self.tipo_dato = None     # lo llena el analizador semántico
-        self.nombre = None        # variable (Declaracion / Asignacion)
-        self.tipo_decl = None     # tipo declarado (Declaracion)
+        self.nombre = None        # variable, función o parámetro
+        self.tipo_decl = None     # tipo declarado (Declaracion, Parametro)
+        self.tipo_ret = None      # tipo que devuelve (Funcion)
+        self.params = []          # nodos Parametro (Funcion)
+        self.cuerpo = []          # sentencias del cuerpo (Funcion)
         self.id = None            # lo llena la AST Table
         self.padre = None
 
@@ -209,13 +242,34 @@ class Parser:
             self.error("No se pueden encadenar asignaciones (a = b = 3; no está permitido en ALEX)",
                        self.actual())
 
-    def sincronizar(self, inicio):
-        """Recuperación de errores: salta hasta el siguiente ';' o la siguiente declaración."""
+    def saltar_bloque(self):
+        """Salta un bloque { ... } completo (con llaves anidadas)."""
+        profundidad = 0
         while self.actual().tipo != "EOF":
-            if self.actual().tipo == "PUNTOCOMA":
+            t = self.avanzar().tipo
+            if t == "LLAVEIZQ":
+                profundidad += 1
+            elif t == "LLAVEDER":
+                profundidad -= 1
+                if profundidad == 0:
+                    return
+
+    def sincronizar(self, inicio):
+        """Recuperación de errores (modo pánico): salta hasta un punto seguro para seguir
+        revisando el resto del programa y poder reportar más de un error."""
+        while self.actual().tipo != "EOF":
+            t = self.actual().tipo
+            if t == "PUNTOCOMA":
                 self.avanzar()
                 return
-            if self.actual().tipo == "DATO" and self.p > inicio:
+            if t in ("DATO", "FUNCION", "RETORNAR") and self.p > inicio:
+                return
+            if t == "LLAVEDER":
+                if self.p == inicio:
+                    self.avanzar()          # llave de cierre suelta: se descarta
+                return
+            if t == "LLAVEIZQ":
+                self.saltar_bloque()
                 return
             self.avanzar()
 
@@ -225,27 +279,36 @@ class Parser:
         while self.actual().tipo != "EOF":
             inicio = self.p
             try:
-                raiz.hijos.append(self.sentencia())
+                raiz.hijos.append(self.sentencia(dentro=False))
             except ErrorAlex as e:
                 self.errores.append(e)
                 self.sincronizar(inicio)
         return raiz
 
-    def sentencia(self):
+    def sentencia(self, dentro):
         t = self.actual()
         if t.tipo == "DATO":
             return self.declaracion()
+        if t.tipo == "FUNCION":
+            return self.funcion(dentro)
+        if t.tipo == "RETORNAR":
+            return self.retorno()
         if t.tipo == "IDENT":
+            if self.t[self.p + 1].tipo == "LPAR":
+                n = self.llamada()
+                self.punto_y_coma()
+                return n
             return self.asignacion()
         if t.tipo in ("TIPO", "VERDADERO", "FALSO"):
             self.error(f"«{t.valor}» es una palabra reservada; una instrucción debe empezar "
-                       "con «dato» o con el nombre de una variable", t)
-        self.error(f"Instrucción inesperada «{simbolo(t)}»: se esperaba «dato» o el nombre de una variable", t)
+                       "con «dato», «funcion», «retornar» o el nombre de una variable o función", t)
+        self.error(f"Instrucción inesperada «{simbolo(t)}»: se esperaba «dato», «funcion», "
+                   "«retornar» o el nombre de una variable o función", t)
 
     def declaracion(self):
         tdato = self.avanzar()
         t = self.actual()
-        if t.tipo in ("DATO", "TIPO", "VERDADERO", "FALSO"):
+        if t.tipo in TOK_RESERVADOS:
             self.error(f"«{t.valor}» es una palabra reservada y no puede usarse como nombre de variable", t)
         if t.tipo != "IDENT":
             self.error("Después de «dato» se esperaba el nombre de la variable", t)
@@ -274,6 +337,100 @@ class Parser:
         nodo.nombre = nombre.valor
         self.sin_encadenar()
         self.punto_y_coma()
+        return nodo
+
+    def funcion(self, dentro):
+        tf = self.actual()
+        if dentro:
+            self.error("No se pueden definir funciones dentro de otra función "
+                       "(en ALEX las funciones se definen al nivel principal)", tf)
+        self.avanzar()
+        t = self.actual()
+        if t.tipo in TOK_RESERVADOS:
+            self.error(f"«{t.valor}» es una palabra reservada y no puede usarse como nombre de función", t)
+        if t.tipo != "IDENT":
+            self.error("Después de «funcion» se esperaba el nombre de la función", t)
+        nombre = self.avanzar()
+        self.esperar("LPAR", f"Se esperaba «(» después del nombre de la función «{nombre.valor}»")
+        params = []
+        if self.actual().tipo != "RPAR":
+            while True:
+                params.append(self.parametro())
+                if self.actual().tipo == "COMA":
+                    self.avanzar()
+                    continue
+                break
+        self.esperar("RPAR", "Falta cerrar el paréntesis «)» de los parámetros")
+        tipo_ret = None
+        if self.actual().tipo == "DOSPUNTOS":
+            self.avanzar()
+            tt = self.actual()
+            if tt.tipo != "TIPO":
+                self.error("Se esperaba el tipo que devuelve la función (entero, decimal, texto o logico)", tt)
+            tipo_ret = self.avanzar().valor
+        self.esperar("LLAVEIZQ", "Se esperaba «{» para abrir el cuerpo de la función")
+        cuerpo = []
+        while self.actual().tipo not in ("LLAVEDER", "EOF"):
+            inicio = self.p
+            try:
+                cuerpo.append(self.sentencia(dentro=True))
+            except ErrorAlex as e:
+                self.errores.append(e)
+                self.sincronizar(inicio)
+        if self.actual().tipo == "EOF":
+            raise ErrorAlex("sintáctico",
+                            f"Falta «}}» para cerrar la función «{nombre.valor}»", tf.linea, tf.col)
+        self.avanzar()
+        firma = f"{nombre.valor}({', '.join(p.valor for p in params)})"
+        nodo = Nodo("Funcion", firma, params + cuerpo, tf.linea)
+        nodo.nombre = nombre.valor
+        nodo.params = params
+        nodo.cuerpo = cuerpo
+        nodo.tipo_ret = tipo_ret
+        return nodo
+
+    def parametro(self):
+        t = self.actual()
+        if t.tipo in TOK_RESERVADOS:
+            self.error(f"«{t.valor}» es una palabra reservada y no puede usarse como nombre de parámetro", t)
+        if t.tipo != "IDENT":
+            self.error("Se esperaba el nombre de un parámetro", t)
+        nombre = self.avanzar()
+        self.esperar("DOSPUNTOS", f"Se esperaba «:» después del nombre del parámetro «{nombre.valor}»")
+        tt = self.actual()
+        if tt.tipo != "TIPO":
+            self.error("Se esperaba el tipo del parámetro (entero, decimal, texto o logico)", tt)
+        tipo = self.avanzar()
+        nodo = Nodo("Parametro", f"{nombre.valor}: {tipo.valor}", linea=nombre.linea)
+        nodo.nombre = nombre.valor
+        nodo.tipo_decl = tipo.valor
+        return nodo
+
+    def retorno(self):
+        tr = self.avanzar()
+        nodo = Nodo("Retorno", linea=tr.linea)
+        if self.actual().tipo != "PUNTOCOMA":
+            nodo.hijos.append(self.expresion())
+            self.sin_encadenar()
+        self.punto_y_coma()
+        return nodo
+
+    def llamada(self):
+        nombre = self.avanzar()
+        self.avanzar()                                   # «(»
+        args = []
+        if self.actual().tipo != "RPAR":
+            while True:
+                args.append(self.expresion())
+                if self.actual().tipo == "COMA":
+                    self.avanzar()
+                    continue
+                break
+        if self.actual().tipo != "RPAR":
+            self.error(f"Falta cerrar el paréntesis «)» de la llamada a «{nombre.valor}»", self.actual())
+        self.avanzar()
+        nodo = Nodo("Llamada", nombre.valor, args, nombre.linea)
+        nodo.nombre = nombre.valor
         return nodo
 
     def expresion(self):
@@ -312,6 +469,8 @@ class Parser:
             self.avanzar()
             return Nodo("LiteralLogico", t.valor, linea=t.linea)
         if t.tipo == "IDENT":
+            if self.t[self.p + 1].tipo == "LPAR":
+                return self.llamada()
             self.avanzar()
             return Nodo("Variable", t.valor, linea=t.linea)
         if t.tipo == "LPAR":
@@ -323,13 +482,18 @@ class Parser:
 
 
 # ---------------------------------------------------------------------------
-# 3. ANALIZADOR SEMÁNTICO + TABLA DE SÍMBOLOS
+# 3. ANALIZADOR SEMÁNTICO + TABLA DE SÍMBOLOS (con ámbitos)
+#
+# Ámbitos: hay un ámbito «global» y uno por cada función. Una función solo ve
+# sus parámetros y sus variables locales (no ve las globales).
 # ---------------------------------------------------------------------------
 class Simbolo:
-    def __init__(self, nombre, tipo, linea):
+    def __init__(self, nombre, tipo, linea, ambito="global", clase="variable"):
         self.nombre = nombre
         self.tipo = tipo
         self.linea = linea
+        self.ambito = ambito
+        self.clase = clase               # variable | parámetro
         self.con_valor = False
         self.asignaciones = 0
         self.lecturas = 0
@@ -337,23 +501,90 @@ class Simbolo:
         self.valor_final = None
 
 
+class InfoFuncion:
+    def __init__(self, nombre, params, ret, linea, predefinida=False, variadica=False):
+        self.nombre = nombre
+        self.params = params             # lista de (nombre, tipo)
+        self.ret = ret                   # tipo que devuelve; None = no devuelve valor
+        self.linea = linea
+        self.predefinida = predefinida
+        self.variadica = variadica
+        self.llamadas = 0
+
+
+def asignable(destino, origen):
+    return destino == origen or (destino == "decimal" and origen == "entero")
+
+
+def acepta(esperado, recibido):
+    if esperado is None:
+        return True
+    if esperado == "numerico":
+        return recibido in ("entero", "decimal")
+    return asignable(esperado, recibido)
+
+
+def desc_tipo(t):
+    if t == "numerico":
+        return "un número (entero o decimal)"
+    return f"de tipo {t}"
+
+
+def plural(n):
+    return f"{n} argumento" + ("" if n == 1 else "s")
+
+
 class Semantico:
     def __init__(self):
-        self.tabla = {}          # nombre -> Simbolo (la Tabla de Símbolos)
+        self.ambitos = {"global": {}}    # ámbito -> {nombre: Simbolo}
+        self.simbolos = []               # todos los símbolos, en orden de declaración
+        self.funciones = {}              # funciones definidas por el programador
+        self.predef = {}                 # funciones predefinidas (se crean al usarlas)
+        self.ambito = "global"
+        self.funcion_actual = None
         self.errores = []
 
     def err(self, msg, linea):
         self.errores.append(ErrorAlex("semántico", msg, linea))
 
+    def es_funcion(self, nombre):
+        return nombre in PREDEFINIDAS or nombre in self.funciones
+
+    def info_predef(self, nombre):
+        if nombre not in self.predef:
+            d = PREDEFINIDAS[nombre]
+            self.predef[nombre] = InfoFuncion(nombre, d["params"], d["ret"], 0,
+                                              predefinida=True,
+                                              variadica=d.get("variadica", False))
+        return self.predef[nombre]
+
+    def msg_no_declarada(self, nombre, asignando):
+        msg = f"La variable «{nombre}» no está declarada"
+        if self.ambito != "global" and nombre in self.ambitos["global"]:
+            msg += (" en esta función (una función no ve las variables globales; "
+                    "recíbela como parámetro)")
+        elif asignando:
+            msg += " (hay que declararla antes con «dato»)"
+        return msg
+
     def analizar(self, raiz):
         for s in raiz.hijos:
-            if s.tipo == "Declaracion":
-                self.declaracion(s)
-            else:
-                self.asignacion(s)
+            self.sentencia(s)
+
+    def sentencia(self, s):
+        if s.tipo == "Declaracion":
+            self.declaracion(s)
+        elif s.tipo == "Asignacion":
+            self.asignacion(s)
+        elif s.tipo == "Funcion":
+            self.funcion(s)
+        elif s.tipo == "Retorno":
+            self.retorno(s)
+        elif s.tipo == "Llamada":
+            s.tipo_dato = self.llamada(s, False)
 
     def compatible(self, destino, origen, nombre, linea):
-        if destino == origen or (destino == "decimal" and origen == "entero"):
+        if asignable(destino, origen):
             return
         if destino == "entero" and origen == "decimal":
             self.err(f"No se puede guardar un decimal en «{nombre}», que es de tipo entero", linea)
@@ -363,27 +594,157 @@ class Semantico:
 
     def declaracion(self, n):
         te = self.tipo_expr(n.hijos[0]) if n.hijos else None     # primero la expresión
-        if n.nombre in self.tabla:
+        actual = self.ambitos[self.ambito]
+        if self.es_funcion(n.nombre):
+            self.err(f"«{n.nombre}» ya es el nombre de una función y no puede usarse como variable",
+                     n.linea)
+        elif n.nombre in actual:
             self.err(f"La variable «{n.nombre}» ya fue declarada en la línea "
-                     f"{self.tabla[n.nombre].linea}", n.linea)
+                     f"{actual[n.nombre].linea}", n.linea)
         else:
-            s = Simbolo(n.nombre, n.tipo_decl, n.linea)
+            s = Simbolo(n.nombre, n.tipo_decl, n.linea, self.ambito)
             s.con_valor = bool(n.hijos)
-            self.tabla[n.nombre] = s
+            actual[n.nombre] = s
+            self.simbolos.append(s)
         n.tipo_dato = n.tipo_decl
         if te:
             self.compatible(n.tipo_decl, te, n.nombre, n.linea)
 
     def asignacion(self, n):
         te = self.tipo_expr(n.hijos[0])
-        s = self.tabla.get(n.nombre)
+        s = self.ambitos[self.ambito].get(n.nombre)
         if s is None:
-            self.err(f"La variable «{n.nombre}» no está declarada (hay que declararla antes con «dato»)", n.linea)
+            if self.es_funcion(n.nombre):
+                self.err(f"«{n.nombre}» es una función, no una variable: no se le puede asignar un valor",
+                         n.linea)
+            else:
+                self.err(self.msg_no_declarada(n.nombre, True), n.linea)
             return
         s.asignaciones += 1
         n.tipo_dato = s.tipo
         if te:
             self.compatible(s.tipo, te, n.nombre, n.linea)
+
+    def funcion(self, n):
+        nombre = n.nombre
+        info = InfoFuncion(nombre, [(p.nombre, p.tipo_decl) for p in n.params], n.tipo_ret, n.linea)
+        valida = True
+        if nombre in PREDEFINIDAS:
+            self.err(f"«{nombre}» es una función predefinida de ALEX y no se puede redefinir", n.linea)
+            valida = False
+        elif nombre in self.funciones:
+            self.err(f"La función «{nombre}» ya fue definida en la línea "
+                     f"{self.funciones[nombre].linea}", n.linea)
+            valida = False
+        elif nombre in self.ambitos["global"]:
+            self.err(f"«{nombre}» ya es el nombre de una variable (línea "
+                     f"{self.ambitos['global'][nombre].linea})", n.linea)
+            valida = False
+        clave = nombre
+        while clave in self.ambitos:
+            clave += "'"
+        self.ambitos[clave] = {}
+        if valida:
+            self.funciones[nombre] = info        # se registra antes del cuerpo
+        n.tipo_dato = n.tipo_ret
+
+        for p in n.params:                       # parámetros = primeras variables del ámbito
+            p.tipo_dato = p.tipo_decl
+            if p.nombre in self.ambitos[clave]:
+                self.err(f"El parámetro «{p.nombre}» está repetido en la función «{nombre}»", p.linea)
+            elif self.es_funcion(p.nombre):
+                self.err(f"El parámetro «{p.nombre}» no puede llamarse igual que una función", p.linea)
+            else:
+                s = Simbolo(p.nombre, p.tipo_decl, p.linea, clave, "parámetro")
+                s.con_valor = True
+                self.ambitos[clave][p.nombre] = s
+                self.simbolos.append(s)
+
+        anterior = (self.ambito, self.funcion_actual)
+        self.ambito, self.funcion_actual = clave, info
+        ret_linea = None
+        avisado = False
+        for st in n.cuerpo:
+            if ret_linea is not None and not avisado:
+                self.err("Código inalcanzable: esta instrucción está después del «retornar» "
+                         f"de la línea {ret_linea}", st.linea)
+                avisado = True
+            self.sentencia(st)
+            if st.tipo == "Retorno" and ret_linea is None:
+                ret_linea = st.linea
+        if n.tipo_ret and ret_linea is None:
+            self.err(f"La función «{nombre}» debe devolver un valor {n.tipo_ret}, "
+                     "pero no tiene «retornar»", n.linea)
+        self.ambito, self.funcion_actual = anterior
+
+    def retorno(self, n):
+        te = self.tipo_expr(n.hijos[0]) if n.hijos else None
+        n.tipo_dato = te
+        f = self.funcion_actual
+        if f is None:
+            self.err("«retornar» solo se puede usar dentro de una función", n.linea)
+            return
+        if n.hijos:
+            if f.ret is None:
+                self.err(f"La función «{f.nombre}» no declara qué tipo devuelve, así que no puede "
+                         "devolver un valor (agrega «: tipo» después de los parámetros)", n.linea)
+            elif te and not asignable(f.ret, te):
+                if f.ret == "entero" and te == "decimal":
+                    self.err(f"La función «{f.nombre}» devuelve entero, pero «retornar» entrega un "
+                             "decimal (un decimal no cabe en un entero)", n.linea)
+                else:
+                    self.err(f"La función «{f.nombre}» devuelve {f.ret}, pero «retornar» "
+                             f"entrega {te}", n.linea)
+        elif f.ret is not None:
+            self.err(f"La función «{f.nombre}» debe devolver un valor {f.ret}: "
+                     "falta el valor después de «retornar»", n.linea)
+
+    def llamada(self, n, en_expresion):
+        nombre = n.nombre
+        tipos = [self.tipo_expr(a) for a in n.hijos]
+        predef = nombre in PREDEFINIDAS
+        if predef:
+            info = self.info_predef(nombre)
+        elif nombre in self.funciones:
+            info = self.funciones[nombre]
+        else:
+            if nombre in self.ambitos[self.ambito]:
+                self.err(f"«{nombre}» es una variable, no una función", n.linea)
+            else:
+                self.err(f"La función «{nombre}» no está definida "
+                         "(hay que definirla antes de llamarla)", n.linea)
+            return None
+        info.llamadas += 1
+
+        if not predef and self.funcion_actual is not None and nombre == self.funcion_actual.nombre:
+            self.err(f"La función «{nombre}» no puede llamarse a sí misma: ALEX todavía no tiene "
+                     "condicionales y la recursión nunca terminaría", n.linea)
+
+        esperados, recibidos = len(info.params), len(n.hijos)
+        if info.variadica and recibidos < esperados:
+            self.err(f"La función «{nombre}» necesita al menos {plural(esperados)} "
+                     f"y se le pasaron {recibidos}", n.linea)
+        elif not info.variadica and recibidos != esperados:
+            self.err(f"La función «{nombre}» espera {plural(esperados)} "
+                     f"y se le pasaron {recibidos}", n.linea)
+        else:
+            for i, rec in enumerate(tipos):
+                ptipo = info.params[min(i, esperados - 1)][1]
+                if rec is not None and not acepta(ptipo, rec):
+                    self.err(f"El argumento {i + 1} de «{nombre}» debe ser {desc_tipo(ptipo)}, "
+                             f"pero se recibió {rec}", n.linea)
+
+        if info.ret is None:
+            if en_expresion:
+                self.err(f"La función «{nombre}» no devuelve ningún valor: "
+                         "no se puede usar dentro de una expresión", n.linea)
+            n.tipo_dato = None
+            return None
+        ret = info.ret
+        if ret == "=arg":                        # absoluto: devuelve el tipo de su argumento
+            ret = tipos[0] if tipos and tipos[0] in ("entero", "decimal") else None
+        n.tipo_dato = ret
+        return ret
 
     def tipo_expr(self, n):
         t = self._tipo(n)
@@ -401,12 +762,17 @@ class Semantico:
         if k == "LiteralLogico":
             return "logico"
         if k == "Variable":
-            s = self.tabla.get(n.valor)
+            s = self.ambitos[self.ambito].get(n.valor)
             if s is None:
-                self.err(f"La variable «{n.valor}» no está declarada", n.linea)
+                if self.es_funcion(n.valor):
+                    self.err(f"«{n.valor}» es una función; para usarla escribe «{n.valor}(...)»", n.linea)
+                else:
+                    self.err(self.msg_no_declarada(n.valor, False), n.linea)
                 return None
             s.lecturas += 1
             return s.tipo
+        if k == "Llamada":
+            return self.llamada(n, True)
         if k == "Unario":
             t = self.tipo_expr(n.hijos[0])
             if t is None:
@@ -432,6 +798,21 @@ class Semantico:
 # ---------------------------------------------------------------------------
 # 4. EJECUCIÓN (intérprete del AST)
 # ---------------------------------------------------------------------------
+class _Retorno(Exception):
+    """Se lanza al ejecutar «retornar» para salir de la función con su valor."""
+
+    def __init__(self, valor):
+        super().__init__()
+        self.valor = valor
+
+
+class Contexto:
+    def __init__(self):
+        self.funciones = {}     # nombre -> nodo Funcion (se registra al ejecutar su definición)
+        self.eventos = []       # ["traza", línea, texto] o ["salida", línea, texto]
+        self.salida = []        # lo que imprimió «mostrar»
+
+
 def defecto(t):
     return {"entero": 0, "decimal": 0.0, "texto": "", "logico": False}[t]
 
@@ -446,7 +827,16 @@ def fmt(v, t):
     return str(v)
 
 
-def evaluar(n, env):
+def fmt_valor(v):
+    """Formato de un valor cualquiera para «mostrar» (sin comillas en los textos)."""
+    if isinstance(v, bool):
+        return "verdadero" if v else "falso"
+    if isinstance(v, float):
+        return repr(round(v, 10))
+    return str(v)
+
+
+def evaluar(n, env, ctx):
     k = n.tipo
     if k == "LiteralEntero":
         return int(n.valor)
@@ -458,9 +848,11 @@ def evaluar(n, env):
         return n.valor == "verdadero"
     if k == "Variable":
         return env[n.valor]
+    if k == "Llamada":
+        return llamar(n, env, ctx)
     if k == "Unario":
-        return -evaluar(n.hijos[0], env)
-    a, b = evaluar(n.hijos[0], env), evaluar(n.hijos[1], env)
+        return -evaluar(n.hijos[0], env, ctx)
+    a, b = evaluar(n.hijos[0], env, ctx), evaluar(n.hijos[1], env, ctx)
     op = n.valor
     if op == "+":
         return a + b
@@ -473,26 +865,82 @@ def evaluar(n, env):
     return a / b
 
 
-def ejecutar(raiz, tabla):
-    env, traza = {}, []
+def llamar_predef(nombre, args, n, ctx):
+    if nombre == "mostrar":
+        texto = " ".join(fmt_valor(a) for a in args)
+        ctx.salida.append(texto)
+        ctx.eventos.append(["salida", n.linea, texto])
+        return None
+    if nombre == "longitud":
+        return len(args[0])
+    if nombre == "mayusculas":
+        return args[0].upper()
+    if nombre == "redondear":
+        return int(math.floor(args[0] + 0.5))            # los .5 se redondean hacia arriba
+    if nombre == "absoluto":
+        return abs(args[0])
+
+
+def llamar(n, env, ctx):
+    args = [evaluar(a, env, ctx) for a in n.hijos]       # primero se calculan los argumentos
+    if n.nombre in PREDEFINIDAS:
+        return llamar_predef(n.nombre, args, n, ctx)
+    f = ctx.funciones[n.nombre]
+    local = {}                                           # ámbito nuevo para esta llamada
+    for p, v in zip(f.params, args):
+        local[p.nombre] = float(v) if p.tipo_decl == "decimal" else v
+    valor = None
+    try:
+        for s in f.cuerpo:
+            exec_stmt(s, local, ctx)
+    except _Retorno as r:
+        valor = r.valor
+    if f.tipo_ret == "decimal" and valor is not None:
+        valor = float(valor)
+    return valor
+
+
+def exec_stmt(s, env, ctx):
+    if s.tipo == "Declaracion":
+        t = s.tipo_decl
+        v = evaluar(s.hijos[0], env, ctx) if s.hijos else defecto(t)
+        if t == "decimal":
+            v = float(v)
+        env[s.nombre] = v
+        return v
+    if s.tipo == "Asignacion":
+        v = evaluar(s.hijos[0], env, ctx)
+        if s.tipo_dato == "decimal":
+            v = float(v)
+        env[s.nombre] = v
+        return v
+    if s.tipo == "Llamada":
+        return llamar(s, env, ctx)
+    if s.tipo == "Retorno":
+        raise _Retorno(evaluar(s.hijos[0], env, ctx) if s.hijos else None)
+
+
+def ejecutar(raiz, sem, ctx):
+    env = {}
+    glob = sem.ambitos["global"]
     for s in raiz.hijos:
+        if s.tipo == "Funcion":
+            ctx.funciones[s.nombre] = s
+            ctx.eventos.append(["traza", s.linea, f"función «{s.nombre}» definida"])
+            continue
+        ev = ["traza", s.linea, "✘ interrumpida por un error"]
+        ctx.eventos.append(ev)
+        v = exec_stmt(s, env, ctx)
         if s.tipo == "Declaracion":
-            t = s.tipo_decl
-            v = evaluar(s.hijos[0], env) if s.hijos else defecto(t)
-            if t == "decimal":
-                v = float(v)
-            env[s.nombre] = v
-            tabla[s.nombre].valor_inicial = fmt(v, t) + ("" if s.hijos else "  (por defecto)")
+            ev[2] = f"{s.nombre} = {fmt(v, s.tipo_decl)}"
+            glob[s.nombre].valor_inicial = fmt(v, s.tipo_decl) + ("" if s.hijos else "  (por defecto)")
+        elif s.tipo == "Asignacion":
+            ev[2] = f"{s.nombre} = {fmt(v, s.tipo_dato)}"
         else:
-            t = tabla[s.nombre].tipo
-            v = evaluar(s.hijos[0], env)
-            if t == "decimal":
-                v = float(v)
-            env[s.nombre] = v
-        traza.append((s.linea, s.nombre, fmt(v, tabla[s.nombre].tipo)))
+            ev[2] = f"llamada a {s.nombre}"
     for nombre, v in env.items():
-        tabla[nombre].valor_final = fmt(v, tabla[nombre].tipo)
-    return env, traza
+        glob[nombre].valor_final = fmt(v, glob[nombre].tipo)
+    return env
 
 
 # ---------------------------------------------------------------------------
@@ -502,6 +950,7 @@ def tabla_txt(cab, filas):
     filas = [[str(c) for c in f] for f in filas]
     an = [max([len(cab[i])] + [len(f[i]) for f in filas]) for i in range(len(cab))]
     sep = "+" + "+".join("-" * (a + 2) for a in an) + "+"
+
     def lin(f):
         return "| " + " | ".join(f[i].ljust(an[i]) for i in range(len(cab))) + " |"
     out = [sep, lin(cab), sep] + [lin(f) for f in filas] + [sep]
@@ -510,6 +959,7 @@ def tabla_txt(cab, filas):
 
 def numerar(raiz):
     lista = []
+
     def rec(n, padre):
         n.id = len(lista) + 1
         n.padre = padre.id if padre else None
@@ -530,7 +980,7 @@ def arbol_txt(n, prefijo="", ultimo=True, es_raiz=True):
     etiqueta = n.tipo
     if n.valor is not None:
         etiqueta += f" [{valor_txt(n)}]"
-    if n.tipo_dato and n.tipo != "Declaracion":
+    if n.tipo_dato and n.tipo not in ("Declaracion", "Parametro"):
         etiqueta += f" : {n.tipo_dato}"
     if es_raiz:
         lineas = [etiqueta]
@@ -559,17 +1009,42 @@ def reportar(errores, lineas):
                 print("      " + " " * (e.col - 1) + "^")
 
 
-def mostrar_simbolos(tabla, con_valores):
-    cab = ["Nombre", "Tipo", "Línea decl.", "Asignaciones", "Lecturas"]
+def firma_params(info):
+    if not info.params:
+        return "-"
+    partes = []
+    for nombre, tipo in info.params:
+        t = "cualquiera" if tipo is None else ("número" if tipo == "numerico" else tipo)
+        partes.append(f"{nombre}: {t}")
+    txt = ", ".join(partes)
+    return txt + ", ..." if info.variadica else txt
+
+
+def mostrar_funciones(sem):
+    infos = list(sem.funciones.values()) + [i for i in sem.predef.values() if i.llamadas > 0]
+    if not infos:
+        return
+    filas = []
+    for i in infos:
+        ret = "-" if i.ret is None else ("(igual al argumento)" if i.ret == "=arg" else i.ret)
+        filas.append([i.nombre, "predefinida" if i.predefinida else "propia", firma_params(i), ret,
+                      "-" if i.predefinida else i.linea, i.llamadas])
+    print("\nTabla de funciones:")
+    print(tabla_txt(["Función", "Origen", "Parámetros", "Retorna", "Línea", "Llamadas"], filas))
+
+
+def mostrar_simbolos(sem, con_valores):
+    cab = ["Nombre", "Tipo", "Clase", "Ámbito", "Línea", "Asign.", "Lect."]
     if con_valores:
         cab += ["Valor inicial", "Valor final"]
     filas = []
-    for s in tabla.values():
-        f = [s.nombre, s.tipo, s.linea, s.asignaciones, s.lecturas]
+    for s in sem.simbolos:
+        f = [s.nombre, s.tipo, s.clase, s.ambito, s.linea, s.asignaciones, s.lecturas]
         if con_valores:
-            f += [s.valor_inicial, s.valor_final]
+            f += [s.valor_inicial or "-", s.valor_final or "-"]
         filas.append(f)
     print(tabla_txt(cab, filas))
+    mostrar_funciones(sem)
 
 
 # ---------------------------------------------------------------------------
@@ -618,23 +1093,36 @@ def compilar(fuente, ver_tokens=False):
     if sem.errores:
         reportar(sem.errores, lineas)
         print("\nTabla de Símbolos (hasta donde se pudo analizar):")
-        mostrar_simbolos(sem.tabla, False)
+        mostrar_simbolos(sem, False)
         print(f"\nCompilación detenida: {len(sem.errores)} error(es) semántico(s).")
         return 1
-    print("  ✔ Variables declaradas antes de usarse, sin duplicados y con tipos compatibles.")
+    print("  ✔ Variables y funciones declaradas antes de usarse, sin duplicados, "
+          "con tipos y argumentos compatibles.")
 
     titulo("FASE 4: EJECUCIÓN")
+    ctx = Contexto()
+    error = None
     try:
-        env, traza = ejecutar(raiz, sem.tabla)
+        ejecutar(raiz, sem, ctx)
     except ErrorEjecucion as e:
-        print(f"  ✘ Error de ejecución: {e}")
+        error = e
+    for tipo, linea, texto in ctx.eventos:
+        if tipo == "traza":
+            src = lineas[linea - 1].strip() if linea <= len(lineas) else ""
+            print(f"  L{linea:<3} {src:<45} →  {texto}")
+        else:
+            print(f"       ▶ SALIDA: {texto}")
+    if error:
+        print(f"  ✘ Error de ejecución: {error}")
         return 1
-    for linea, nombre, valor in traza:
-        src = lineas[linea - 1].strip() if linea <= len(lineas) else ""
-        print(f"  L{linea:<3} {src:<45} →  {nombre} = {valor}")
+
+    if ctx.salida:
+        titulo("SALIDA DEL PROGRAMA")
+        for texto in ctx.salida:
+            print("  " + texto)
 
     titulo("TABLA DE SÍMBOLOS")
-    mostrar_simbolos(sem.tabla, True)
+    mostrar_simbolos(sem, True)
     print()
     return 0
 
