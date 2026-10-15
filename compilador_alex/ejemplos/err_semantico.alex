@@ -1,0 +1,8 @@
+edad = 20;
+dato edad: entero;
+edad = "veinte";
+dato edad: decimal;
+dato nota: entero = 4.5;
+dato ok: logico = 1;
+dato s: texto = "a" - "b";
+dato q: decimal = y + 1;

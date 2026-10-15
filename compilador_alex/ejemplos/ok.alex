@@ -1,0 +1,15 @@
+// Programa de ejemplo en ALEX (sin errores)
+dato nombre: texto = "Alexis";
+dato edad: entero = 21;
+dato promedio: decimal;
+dato aprobado: logico = falso;
+dato precio: decimal = 12.50;
+dato activo: logico = verdadero;
+dato saludo: texto = "Hola, " + nombre;
+
+promedio = 9.5;
+edad = edad + 1;
+aprobado = verdadero;
+precio = precio + 2.5;
+precio = 5;
+dato total: decimal = (edad + 2) * precio / 2;
