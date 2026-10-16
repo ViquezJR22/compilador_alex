@@ -1,0 +1,46 @@
+dato edad: entero = 20;
+dato nombre: texto = "Ana";
+
+si (edad) {
+    mostrar("a");
+}
+si (nombre > 3) {
+    mostrar("b");
+}
+si (nombre == edad) {
+    mostrar("c");
+}
+si (edad > 18) {
+    dato temporal: entero = 1;
+}
+mostrar(temporal);
+si (edad > 18) {
+    retornar 1;
+}
+funcion sinretorno(n: entero): entero {
+    si (n > 0) {
+        retornar 1;
+    }
+}
+funcion inalcanzable(n: entero): entero {
+    si (n > 0) {
+        retornar 1;
+    } sino {
+        retornar 2;
+    }
+    retornar 3;
+}
+funcion tipos(n: entero): texto {
+    si (n > 0) {
+        retornar "positivo";
+    } sino {
+        retornar n;
+    }
+}
+funcion veglobal(): entero {
+    si (edad > 0) {
+        retornar 1;
+    }
+    retornar 0;
+}
+dato resultado: logico = edad > "a";

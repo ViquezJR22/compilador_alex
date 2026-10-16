@@ -1,0 +1,56 @@
+// Condicionales en ALEX: si / sino (sin errores)
+dato edad: entero = 20;
+dato nota: decimal = 8.5;
+
+// si con sino
+si (edad >= 18) {
+    mostrar("Es mayor de edad");
+} sino {
+    mostrar("Es menor de edad");
+}
+
+// si sin sino: la condicion es falsa, asi que no pasa nada
+si (nota > 9) {
+    mostrar("Excelente");
+}
+
+// sino si: varias opciones
+dato letra: texto = "";
+si (nota >= 9) {
+    letra = "A";
+} sino si (nota >= 7) {
+    letra = "B";
+} sino {
+    letra = "C";
+}
+mostrar("Calificacion:", letra);
+
+// Funcion con si y sino: los dos caminos retornan
+funcion mayor(a: entero, b: entero): entero {
+    si (a > b) {
+        retornar a;
+    } sino {
+        retornar b;
+    }
+}
+
+// Funcion recursiva: el si es el caso base
+funcion factorial(n: entero): entero {
+    si (n <= 1) {
+        retornar 1;
+    }
+    retornar n * factorial(n - 1);
+}
+
+mostrar("Mayor entre 7 y 12:", mayor(7, 12));
+mostrar("Factorial de 5:", factorial(5));
+
+// Una variable declarada dentro de un bloque solo existe en ese bloque
+si (edad == 20) {
+    dato mensaje: texto = "Tienes 20 anos";
+    mostrar(mensaje);
+}
+
+// Una comparacion produce un valor logico
+dato esAdulto: logico = edad >= 18;
+mostrar("esAdulto:", esAdulto);

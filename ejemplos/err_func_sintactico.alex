@@ -1,0 +1,18 @@
+funcion f(a: entero {
+    retornar a;
+}
+funcion g(a entero): entero {
+    retornar a;
+}
+funcion h(): entero {
+    funcion interna() {
+    }
+    retornar 1;
+}
+dato x: entero = suma(1, );
+mostrar("hola")
+funcion k(a: entero, ): entero {
+    retornar a;
+}
+funcion m(a: entero): entero {
+    retornar a;

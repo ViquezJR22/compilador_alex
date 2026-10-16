@@ -1,0 +1,17 @@
+dato x: entero = 5;
+si x > 3 {
+    mostrar("a");
+}
+si (x > 3) mostrar("b");
+si (x > 3) {
+    mostrar("c");
+} sino
+    mostrar("d");
+sino {
+    mostrar("e");
+}
+si (x > ) {
+    mostrar("f");
+}
+si (x > 3) {
+    mostrar("g");

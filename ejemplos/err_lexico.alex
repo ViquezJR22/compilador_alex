@@ -1,0 +1,4 @@
+dato a: entero = 5;
+dato b: decimal = 3.;
+dato c: texto = "sin cerrar;
+dato d: entero = 4 @ 2;

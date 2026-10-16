@@ -1,0 +1,32 @@
+// Funciones en ALEX: propias y predefinidas (sin errores)
+dato nombre: texto = "Alexis";
+dato nota: decimal = 9.6;
+
+// Funcion propia que devuelve un entero
+funcion suma(a: entero, b: entero): entero {
+    dato resultado: entero = a + b;
+    retornar resultado;
+}
+
+// Funcion propia que devuelve un decimal (recibe enteros o decimales)
+funcion promedio(x: decimal, y: decimal): decimal {
+    retornar (x + y) / 2;
+}
+
+// Funcion sin tipo de retorno: solo hace algo
+funcion saludar(quien: texto) {
+    mostrar("Hola,", quien);
+}
+
+dato total: entero = suma(2, 3);
+dato prom: decimal = promedio(8, 9.5);
+dato letras: entero = longitud(nombre);
+dato notaFinal: entero = redondear(nota);
+dato magnitud: entero = absoluto(-15);
+
+saludar(mayusculas(nombre));
+mostrar("Total:", total);
+mostrar("Promedio:", prom);
+mostrar("Tu nombre tiene", letras, "letras");
+mostrar("Nota redondeada:", notaFinal);
+mostrar("Valor absoluto:", magnitud);

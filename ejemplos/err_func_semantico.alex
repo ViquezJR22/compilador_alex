@@ -1,0 +1,35 @@
+funcion suma(a: entero, b: entero): entero {
+    retornar a + b;
+}
+funcion suma(x: entero): entero {
+    retornar x;
+}
+funcion sinretorno(a: entero): entero {
+    dato t: entero = a;
+}
+funcion tipomal(a: entero): texto {
+    retornar a;
+}
+funcion inalcanzable(a: entero): entero {
+    retornar a;
+    dato z: entero = 1;
+}
+funcion solo() {
+    retornar 5;
+}
+funcion calcular(a: entero): entero {
+    dato interno: entero = a * 2;
+    retornar interno;
+}
+dato g: entero = 7;
+funcion veglobal(): entero {
+    retornar g;
+}
+dato a: entero = suma(1);
+dato b: entero = suma(1, "2");
+dato c: entero = noExiste(3);
+dato d: entero = mostrar("x");
+dato e: entero = longitud(5);
+dato suma: entero = 3;
+dato y: entero = interno;
+retornar 3;
